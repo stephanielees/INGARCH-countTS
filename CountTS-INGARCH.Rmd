@@ -1,0 +1,265 @@
+---
+title: "Modelling the total visitor of a webpage"
+author: "Stephanie_Lee_S"
+date: "2024-12-06"
+output: html_document
+bibliography: references.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(ggcorrplot)
+library(plotly)
+library(tscount)
+```
+
+
+```{r}
+df = read.csv("wiki_BucketSort.csv")
+df
+```
+
+Since this dataset has no time index, we need to make it to facilitate plotting.
+
+```{r}
+df = df %>% mutate("Date"=seq.Date(from=as.Date("2019-03-16"),
+                                     to=as.Date("2021-03-15"),
+                                     by='day'))
+df
+```
+
+```{r}
+thetitle <- paste("Total daily visitors of Wikipedia Page for 'Bucket Sort'\n", 
+                  "mean:", round(mean(df$y), 2), 
+                  "variance:", round(var(df$y), 2))
+fig <- plot_ly(df, x=~Date) %>%
+        add_lines(y=~y, line = list(color='#cf2f85')) %>%
+        layout(title=thetitle,
+               paper_bgcolor='#FEFEFE',
+               plot_bgcolor='#FEFEFE')
+fig
+```
+
+```{r}
+ggplot(data=df, mapping=aes(x=y)) + 
+    geom_density(orientation = "x", fill = "#046f3b") +
+    theme_light() + 
+    theme(panel.background = element_rect(fill='#FEFEFE'))
+```
+
+```{r fig.width=12, fig.height=8}
+par(mfrow=c(2,1))
+acf(df$y)
+pacf(df$y)
+```
+
+```{r fig.width=12, fig.height=8}
+par(mfrow=c(2,1))
+y_diff = diff(df$y)
+acf(y_diff)
+pacf(y_diff)
+```
+
+```{r fig.width=12, fig.height=8}
+plot(decompose(ts(df$y, frequency = 7), type="additive"))
+```
+
+```{r fig.width=12, fig.height=8}
+#get random column index
+selected_cols <- sample.int(n=17, size=4)
+
+#make a list of arrays of the column index and the color
+cc <- list(first=c(selected_cols[1], "#7566a9"),
+           second=c(selected_cols[2], "#9e3383"),
+           third=c(selected_cols[3], "#a7c645"),
+           fourth=c(selected_cols[4], "#046f3b"))
+
+#make a list of figures for making subplots later
+figs <- list()
+
+for (i in seq_along(cc)){
+    element <- cc[[i]]
+    c1 <- as.integer(element[1])
+    c2 <- element[2]
+    figs[[i]] <- plot_ly(x=df$Date, y=df[,c1],
+                         type="scatter", 
+                         mode="lines",
+                         name=names(df)[c1],
+                         line=list(color=c2)) %>%
+        layout(paper_bgcolor="#FEFEFE",
+               plot_bgcolor="#FEFEFE")
+}
+subplot(figs, nrows=4, shareX=TRUE)
+```
+
+```{r fig.width=10, fig.height=10}
+ggcorrplot(round(cor(df[, 1:18]), 2), type = "upper",
+           colors = c("#cf2f85", "#FEFEFE", "#0258a5"),
+           lab = TRUE)
+```
+
+# Split the data
+
+```{r}
+df_t <- df[df$Date < "2021-03-01", 1:17]
+df_v <- df[df$Date >= "2021-03-01", 1:17]
+
+y_t <- df$y[df$Date < "2021-03-01"]
+y_v <- df$y[df$Date >= "2021-03-01"]
+length(y_v)
+```
+
+# Modelling
+
+```{r}
+names(df)
+```
+
+```{r}
+#y_t with y_{t-1} is highly correlated
+plot(y_t[1:(length(y_t)-1)], y_t[2:length(y_t)])
+
+#y_t with its 25th lag is weakly correlated
+plot(y_t[1:(length(y_t)-25)], y_t[26:length(y_t)])
+```
+
+```{r}
+model_pois_c <- tsglm(y_t, 
+                     model = list(past_obs=c(1,6), past_mean=7),
+                     xreg=df_t, distr=NULL)
+
+model_pois <- tsglm(y_t, 
+                    model = list(past_obs=c(1,6), past_mean=7))
+
+model_nb_c <- tsglm(y_t, 
+                   model = list(past_obs=c(1,6), past_mean=7),
+                   xreg = df_t,
+                   distr = "nbinom")
+
+model_nb <- tsglm(y_t, 
+                  model = list(past_obs=c(1,6), past_mean=7), 
+                  distr = "nbinom")
+
+model_nb_3c <- tsglm(y_t, 
+                     model = list(past_obs=c(1,6), past_mean=7),
+                     xreg=df_t[,11:13], 
+                     distr="nbinom")
+```
+
+```{r}
+summary(model_nb_c)
+model_nb_c
+```
+
+# Comparing models
+
+```{r}
+data.frame(AIC=c(summary(model_pois_c)$AIC,
+                 summary(model_pois)$AIC,
+                 summary(model_nb_c)$AIC,
+                 summary(model_nb)$AIC,
+                 summary(model_nb_3c)$AIC),
+           BIC=c(summary(model_pois_c)$BIC,
+                 summary(model_pois)$BIC,
+                 summary(model_nb_c)$BIC,
+                 summary(model_nb)$BIC,
+                 summary(model_nb_3c)$BIC),
+           row.names = c("model_pois_c", "model_pois",
+                         "model_nb_c", "model_nb",
+                         "model_nb_3c"))
+```
+
+ACF of the residuals
+
+```{r acf_res, fig.width=12, fig.height=10}
+par(mfrow=c(3,2))
+acf(residuals(model_pois_c), main="Poisson-Covariates")
+acf(residuals(model_pois), main="Poisson")
+acf(residuals(model_nb_c), main="Neg Binom-Covariates")
+acf(residuals(model_nb), main="Neg Binom")
+acf(residuals(model_nb_3c), main="Neg Binom - 3 Covariates")
+```
+
+The Probability Integral Transform
+
+```{r fig.width=12, fig.height=12}
+par(mfrow=c(3,2))
+pit(model_pois_c, bins=20, main="Poisson-Covariates", col='#a7c645')
+pit(model_pois, bins=20, main="Poisson", col='#a7c645')
+pit(model_nb_c, bins=20, main="Neg Binom-Covariates", col='#a7c645')
+pit(model_nb, bins=20, main="Neg-Binom", col='#a7c645')
+pit(model_nb_3c, bins=20, main="Neg-Binom with 3 Covariates", 
+    col='#a7c645')
+```
+
+```{r}
+data.frame(rbind(PoissonC = scoring(model_pois_c),
+                 Poisson = scoring(model_pois),
+                 Negative_Binomial_C = scoring(model_nb_c),
+                 Negative_Binomial = scoring(model_nb),
+                 Negative_Binomial_3C = scoring(model_nb_3c)))
+```
+
+# Predict (compare the "finalists")
+
+```{r}
+forecast <- function(fitted.model, plot.col,
+                     figure=plot_ly(df[df$Date>="2021-03-01",], 
+                                    x=~Date)){
+    # check if plot.col has two colors
+    if (length(plot.col) != 2) print("Give me two colors :(")
+    
+    covariates_used <- c(names(data.frame(fitted.model$xreg)))
+    distr_used <- ifelse(is.null(fitted.model$call$distr),
+                         "poisson", "nbinom")
+    model_used <- fitted.model$model
+    
+    mean_fcst <- c()
+    coherent_fcst <- c()
+    mod <- fitted.model
+    
+    # forecast the total daily visitor for the next 15 days
+    for (i in seq(15)){
+        # get the predictions
+        fcst <- predict(mod)
+        mean_fcst[i] <- fcst$pred
+        coherent_fcst[i] <- fcst$median
+        
+        # train the model with added data
+        if (length(covariates_used) > 0){
+            mod <- tsglm(ts = append(y_t, y_v[1:i]),
+                     model = list(past_obs=model_used$past_obs,
+                                  past_mean=model_used$past_mean),
+                     xreg = rbind(df_t[, covariates_used], 
+                                  df_v[1:i, covariates_used]),
+                     distr = distr_used)
+        }
+        if (length(covariates_used) == 0) {
+            mod <- tsglm(ts = append(y_t, y_v[1:i]),
+                     model = list(past_obs=model_used$past_obs,
+                                  past_mean=model_used$past_mean),
+                     distr = distr_used)
+        }
+        
+    }
+    figure %>%
+        add_lines(y=y_v, name="real count",
+                  line=list(color="gray")) %>%
+        add_lines(y=mean_fcst, name="forecast",
+                  line=list(color=plot.col[1])) %>%
+        add_lines(y=coherent_fcst, name="coherent forecast",
+                  line=list(color=plot.col[2]))
+}
+```
+
+```{r}
+forecast_fig <- forecast(model_nb, plot.col=c("#0258a5", "#8dbae3"))
+forecast(model_nb_3c, plot.col=c("#cf2f85", "#ed8ab6"), 
+         figure=forecast_fig)
+```
